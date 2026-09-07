@@ -1,0 +1,4 @@
+../Core/Src/NMEA.c:24:12:nmea_field	10
+../Core/Src/NMEA.c:45:15:nmea_to_degrees	2
+../Core/Src/NMEA.c:56:5:decodeGGA	5
+../Core/Src/NMEA.c:114:5:decodeRMC	4

@@ -1,0 +1,2 @@
+../Core/Src/MPU9250.c:34:19:initMPU9250	88	static
+../Core/Src/MPU9250.c:198:19:readMPU9250	56	static
