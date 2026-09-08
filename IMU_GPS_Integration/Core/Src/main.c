@@ -71,8 +71,8 @@ int ccrValue = 0;
 int prevccr = 0;
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-	yesprint = 1;
 	ccrValue = TIM2->CCR1;
+	yesprint = 1;
 }
 
 /* USER CODE END PFP */
@@ -95,6 +95,59 @@ typedef enum {
 GPS_State gpsState = GPS_HUNT_DOLLAR;
 char gpsSentenceBuf[128];
 uint8_t gpsSentenceIdx = 0;
+
+uint8_t gnssAvailable = 0;
+
+void readGNSS() {
+	while (IsDataAvailable()) {
+		char c = (char) UART_Read();
+
+		if (gpsState == GPS_HUNT_DOLLAR) {
+			if (c == '$') {
+				gpsSentenceBuf[0] = c;
+				gpsSentenceIdx = 1;
+				gpsState = GPS_READ_SENTENCE;
+			}
+		} else { // GPS_READ_SENTENCE
+
+			// Abort malformed sentence and restart on a new '$'
+			if (c == '$') {
+				gpsSentenceBuf[0] = c;
+				gpsSentenceIdx = 1;
+				continue;
+			}
+
+			if (gpsSentenceIdx < sizeof(gpsSentenceBuf) - 1) {
+				gpsSentenceBuf[gpsSentenceIdx++] = c;
+			}
+
+			if (c == '\n') {
+				gpsSentenceBuf[gpsSentenceIdx] = '\0';
+				gpsSentenceIdx = 0;
+				gpsState = GPS_HUNT_DOLLAR;
+
+				// Strip checksum
+				char *star = strchr(gpsSentenceBuf, '*');
+				if (star)
+					*star = '\0';
+
+				// Pass the FULL sentence: field 0 is "$GPGGA"/"$GPRMC"
+				if (strstr(gpsSentenceBuf, "GGA") != NULL) {
+					if (decodeGGA(gpsSentenceBuf, &gpsData.ggastruct) == 0) {
+						flagGGA = 2;
+						gnssAvailable = 1;
+					} else
+						flagGGA = 1;
+				} else if (strstr(gpsSentenceBuf, "RMC") != NULL) {
+					if (decodeRMC(gpsSentenceBuf, &gpsData.rmcstruct) == 0)
+						flagRMC = 2;
+					else
+						flagRMC = 1;
+				}
+			}
+		}
+	}
+}
 
 /* USER CODE END 0 */
 
@@ -146,7 +199,7 @@ int main(void) {
 // Global Positioning System
 
 // Timing and Synchronization
-	int loopTimer = HAL_GetTick();
+	int loopTimer = TIM2->CNT;
 	float tor_i = 0.005;
 
 	// Printing & Debugging
@@ -155,100 +208,81 @@ int main(void) {
 
 	HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
 
+	uint8_t initDone = 0;
+	int startTime = 0;
+	int startPPS = 0;
+	int ppsCount = 0;
+
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
 		// --- Non-blocking GPS parser ---
-		while (IsDataAvailable()) {
-			char c = (char) UART_Read();
+		readGNSS();
 
-			if (gpsState == GPS_HUNT_DOLLAR) {
-				if (c == '$') {
-					gpsSentenceBuf[0] = c;
-					gpsSentenceIdx = 1;
-					gpsState = GPS_READ_SENTENCE;
-				}
-			} else { // GPS_READ_SENTENCE
+		if (!initDone && gnssAvailable) {
+			startTime = gpsData.ggastruct.tim.secOfDay;
+			prevccr = ccrValue;
 
-				// Abort malformed sentence and restart on a new '$'
-				if (c == '$') {
-					gpsSentenceBuf[0] = c;
-					gpsSentenceIdx = 1;
-					continue;
-				}
-
-				if (gpsSentenceIdx < sizeof(gpsSentenceBuf) - 1) {
-					gpsSentenceBuf[gpsSentenceIdx++] = c;
-				}
-
-				if (c == '\n') {
-					gpsSentenceBuf[gpsSentenceIdx] = '\0';
-					gpsSentenceIdx = 0;
-					gpsState = GPS_HUNT_DOLLAR;
-
-					// Strip checksum
-					char *star = strchr(gpsSentenceBuf, '*');
-					if (star)
-						*star = '\0';
-
-					// Pass the FULL sentence: field 0 is "$GPGGA"/"$GPRMC"
-					if (strstr(gpsSentenceBuf, "GGA") != NULL) {
-						if (decodeGGA(gpsSentenceBuf, &gpsData.ggastruct) == 0)
-							flagGGA = 2;
-						else
-							flagGGA = 1;
-					} else if (strstr(gpsSentenceBuf, "RMC") != NULL) {
-						if (decodeRMC(gpsSentenceBuf, &gpsData.rmcstruct) == 0)
-							flagRMC = 2;
-						else
-							flagRMC = 1;
-					}
-				}
+//			int len = snprintf((char*) msgOut, sizeof(msgOut), "A %d,%d\r\n",
+//					prevccr, startTime);
+//			CDC_Transmit_FS(msgOut, len);
+			if (prevccr) {
+				initDone = 1;
 			}
+			gnssAvailable = 0;
 		}
 
-		int currentTimer = HAL_GetTick();
-		if (currentTimer - loopTimer >= 5) {
+		if (initDone) {
+			int currentTimer = TIM2->CNT;
+			if (currentTimer - loopTimer >= 50) {
 
-			tor_i = (currentTimer - loopTimer) / 1000.0f;
+				tor_i = (currentTimer - loopTimer) / 10000.0f;
 
-			readMPU9250(&imu.info.i2c, imu.info.daddr, &imu);
+				int imu_time_int = startTime + ppsCount;
+				float imu_time_decimal = (currentTimer - ccrValue) / 10000.0f;
+				double imu_time = (double)imu_time_int + (double)imu_time_decimal;
+				readMPU9250(&imu.info.i2c, imu.info.daddr, &imu);
 
-//			int len = snprintf((char*) msgOut, sizeof(msgOut),
-//					"%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
-//					imu.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2],
-//					imu.omega_ib_b[0], imu.omega_ib_b[1], imu.omega_ib_b[2],
-//					tor_i);
-//			CDC_Transmit_FS(msgOut, len);
+				// --- IMU print ---
+				int len = snprintf((char*) msgOut, sizeof(msgOut),
+						"%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
+						imu_time,
+						imu.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2],
+						imu.omega_ib_b[0], imu.omega_ib_b[1], imu.omega_ib_b[2]);
+				CDC_Transmit_FS(msgOut, len);
 
-			// --- GPS print (only when valid) ---
-//			if (flagGGA == 2) {
-//				uint8_t gpsBuf[120];
-//				int gpsLen = snprintf((char*) gpsBuf, sizeof(gpsBuf),
-//						"%0.3f,%0.6f,%0.6f\r\n", gpsData.ggastruct.tim.secOfDay,
-//						gpsData.ggastruct.lcation.latitude,
-//						gpsData.ggastruct.lcation.longitude);
-//				CDC_Transmit_FS(gpsBuf, gpsLen);
-//				flagGGA = 0;
-
-			if (yesprint) {
-				yesprint = 0;
-
-				int ppsGap = ccrValue - prevccr;
-				int ppsGapMod = ppsGap % 10000;
-
-				if (ppsGapMod > 9910 && ppsGap < 10010) {
-					int len = sniprintf((char*) msgOut, sizeof(msgOut),
-							"%d\r\n", ccrValue - prevccr);
-					CDC_Transmit_FS(msgOut, len);
-					prevccr = ccrValue;
+				// --- GPS print ---
+				if (gnssAvailable == 1) {
+					uint8_t gpsBuf[120];
+					int gpsLen = snprintf((char*) gpsBuf, sizeof(gpsBuf),
+							"%0.3f,%0.6f,%0.6f\r\n",
+							gpsData.ggastruct.tim.secOfDay,
+							gpsData.ggastruct.lcation.latitude,
+							gpsData.ggastruct.lcation.longitude);
+					CDC_Transmit_FS(gpsBuf, gpsLen);
+					gnssAvailable = 0;
 				}
-			}
-//			}
 
-			loopTimer = currentTimer;
+				// --- PPS print ---
+				if (yesprint) {
+					int ppsGap = ccrValue - prevccr;
+
+					int noPPSseconds = ppsGap / 10000;
+
+					ppsCount = ppsCount + noPPSseconds;
+
+//					int len = snprintf((char*) msgOut, sizeof(msgOut),
+//							"B %d,%d\r\n", ppsCount, ppsGap);
+//					CDC_Transmit_FS(msgOut, len);
+
+					prevccr = ccrValue;
+					yesprint = 0;
+				}
+
+				loopTimer = currentTimer;
+			}
 		}
 		/* USER CODE END WHILE */
 
