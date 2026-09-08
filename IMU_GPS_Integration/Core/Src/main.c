@@ -80,7 +80,8 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
 	ppsCapturedCNT = TIM2->CCR1;
 	ppsCapturedUpdated = 1;
 }
@@ -99,7 +100,8 @@ IMU imu;
  * @brief  The application entry point.
  * @retval int
  */
-int main(void) {
+int main(void)
+{
 
 	/* USER CODE BEGIN 1 */
 
@@ -151,26 +153,51 @@ int main(void) {
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-	while (1) {
+	while (1)
+	{
 		// --- Non-blocking GPS parser ---
 		readGPS();
 
-		if (!timeRefEstablished && GPS_IsUpdated(&gpsData)) {
+		if (!timeRefEstablished && GPS_IsUpdated(&gpsData))
+		{
 			startTime = gpsData.time.secondsOfDay;
 			ppsCapturedCNTprev = ppsCapturedCNT;
 
-			if (ppsCapturedCNTprev) {
+			if (ppsCapturedCNTprev && gpsData.isFixValid)
+			{
 				timeRefEstablished = 1;
+
+				// Initialise EKF
+				double lat_rad = gpsData.location.latitude * 0.01745329252;
+				double lon_rad = gpsData.location.longitude * 0.01745329252;
+				double h_m = gpsData.altitude.altitude;
+				float vn = gpsData.velocity.vN;
+				float ve = gpsData.velocity.vE;
+				float vd = 0.0f;
+				float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;   // or compute from IMU
+				float b_a[3] =
+				{ 0.0f, 0.0f, 0.0f };
+				float b_g[3] =
+				{ 0.0f, 0.0f, 0.0f };
+
+				int len = sniprintf((char*)msgOut, sizeof(msgOut), "%d\r\n",
+						startTime);
+				CDC_Transmit_FS(msgOut, len);
+
+				init_EKF(lat_rad, lon_rad, h_m, vn, ve, vd, roll, pitch, yaw, b_a, b_g);
 			}
 			GPS_ResetUpdateFlag(&gpsData);
 		}
 
-		if (timeRefEstablished) {
+		if (timeRefEstablished)
+		{
 			int currentTimer = TIM2->CNT;
-			if (currentTimer - loopTimer >= 50) {
+			if (currentTimer - loopTimer >= 50)
+			{
 
 				// --- Time Synchronization ---
-				if (ppsCapturedUpdated) {
+				if (ppsCapturedUpdated)
+				{
 					int ppsGap = ppsCapturedCNT - ppsCapturedCNTprev;
 
 					int noPPSseconds = ppsGap / 10000;
@@ -184,36 +211,53 @@ int main(void) {
 				tor_i = (currentTimer - loopTimer) / 10000.0f;
 
 				double imu_time = (double) (startTime + ppsCount + 1)
-						+ (double) (currentTimer - ppsCapturedCNT) / 10000.0f;
+					+ (double) (currentTimer - ppsCapturedCNT) / 10000.0f;
 
 				readMPU9250(&imu.info.i2c, imu.info.i2cAddress, &imu);
 
+				// Convert accelerometer from g to m/s²
 				float imuData[6];
-				imuData[0] = imu.f_ib_b[0];
-				imuData[1] = imu.f_ib_b[1];
-				imuData[2] = imu.f_ib_b[2];
-				imuData[3] = imu.omega_ib_b[0];
-				imuData[4] = imu.omega_ib_b[1];
-				imuData[5] = imu.omega_ib_b[2];
+				imuData[0] = imu.f_ib_b[0] * 9.80665f;
+				imuData[1] = imu.f_ib_b[1] * 9.80665f;
+				imuData[2] = imu.f_ib_b[2] * 9.80665f;
+				// Convert gyro from deg/s to rad/s
+				imuData[3] = imu.omega_ib_b[0] * 0.0174533f;
+				imuData[4] = imu.omega_ib_b[1] * 0.0174533f;
+				imuData[5] = imu.omega_ib_b[2] * 0.0174533f;
+
 				predict(imuData, tor_i);
 
+				// Update timestamp and print EKF output
+				ekf_out.timeOfValidity = imu_time;
+
 				// --- IMU print ---
-				int len = snprintf((char*) msgOut, sizeof(msgOut),
-						"IMU,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
-						imu_time, imu.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2],
-						imu.omega_ib_b[0], imu.omega_ib_b[1],
-						imu.omega_ib_b[2]);
+				int len = snprintf((char*) msgOut, sizeof(msgOut), "IMU,%d,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n", startTime, imu_time, imu
+						.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2], imu.omega_ib_b[0], imu.omega_ib_b[1], imu.omega_ib_b[2]);
+				CDC_Transmit_FS(msgOut, len);
+
+				len = snprintf((char*) msgOut, sizeof(msgOut), "EKF,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n", ekf_out
+					.timeOfValidity, ekf_out.latitude, ekf_out.longitude, ekf_out.altitude, ekf_out.vN, ekf_out
+					.vE, ekf_out.vD, ekf_out.roll, ekf_out.pitch, ekf_out.yaw);
 				CDC_Transmit_FS(msgOut, len);
 
 				// --- GPS print ---
-				if (GPS_IsUpdated(&gpsData)) {
-					int gpsLen = snprintf((char*) msgOut, sizeof(msgOut),
-							"GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f\r\n",
-							gpsData.time.secondsOfDay,
-							gpsData.location.latitude,
-							gpsData.location.longitude, gpsData.velocity.vN,
-							gpsData.velocity.vE);
+				if (GPS_IsUpdated(&gpsData))
+				{
+					double lat_rad = gpsData.location.latitude * 0.01745329252;
+					double lon_rad = gpsData.location.longitude * 0.01745329252;
+					double h_m = gpsData.altitude.altitude;  // metres
+					float vn = gpsData.velocity.vN;
+					float ve = gpsData.velocity.vE;
+					float vd = 0.0f;   // not provided, assume zero
+
+					// Correct EKF with GNSS (update converts to ECEF internally)
+					update(lat_rad, lon_rad, h_m, vn, ve, vd);
+
+					int gpsLen = snprintf((char*) msgOut, sizeof(msgOut), "GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f\r\n", gpsData
+							.time.secondsOfDay, gpsData.location.latitude, gpsData.location.longitude, gpsData.velocity
+							.vN, gpsData.velocity.vE);
 					CDC_Transmit_FS(msgOut, gpsLen);
+
 					GPS_ResetUpdateFlag(&gpsData);
 				}
 
@@ -231,9 +275,12 @@ int main(void) {
  * @brief System Clock Configuration
  * @retval None
  */
-void SystemClock_Config(void) {
-	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
-	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
+void SystemClock_Config(void)
+{
+	RCC_OscInitTypeDef RCC_OscInitStruct =
+	{ 0 };
+	RCC_ClkInitTypeDef RCC_ClkInitStruct =
+	{ 0 };
 
 	/** Configure the main internal regulator output voltage
 	 */
@@ -251,20 +298,21 @@ void SystemClock_Config(void) {
 	RCC_OscInitStruct.PLL.PLLN = 336;
 	RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
 	RCC_OscInitStruct.PLL.PLLQ = 7;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+	{
 		Error_Handler();
 	}
 
 	/** Initializes the CPU, AHB and APB buses clocks
 	 */
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
 	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
 	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
 	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
 	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+	{
 		Error_Handler();
 	}
 }
@@ -274,7 +322,8 @@ void SystemClock_Config(void) {
  * @param None
  * @retval None
  */
-static void MX_I2C1_Init(void) {
+static void MX_I2C1_Init(void)
+{
 
 	/* USER CODE BEGIN I2C1_Init 0 */
 
@@ -292,7 +341,8 @@ static void MX_I2C1_Init(void) {
 	hi2c1.Init.OwnAddress2 = 0;
 	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
 	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+	if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN I2C1_Init 2 */
@@ -306,15 +356,19 @@ static void MX_I2C1_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_TIM2_Init(void) {
+static void MX_TIM2_Init(void)
+{
 
 	/* USER CODE BEGIN TIM2_Init 0 */
 
 	/* USER CODE END TIM2_Init 0 */
 
-	TIM_ClockConfigTypeDef sClockSourceConfig = { 0 };
-	TIM_MasterConfigTypeDef sMasterConfig = { 0 };
-	TIM_IC_InitTypeDef sConfigIC = { 0 };
+	TIM_ClockConfigTypeDef sClockSourceConfig =
+	{ 0 };
+	TIM_MasterConfigTypeDef sMasterConfig =
+	{ 0 };
+	TIM_IC_InitTypeDef sConfigIC =
+	{ 0 };
 
 	/* USER CODE BEGIN TIM2_Init 1 */
 
@@ -325,27 +379,31 @@ static void MX_TIM2_Init(void) {
 	htim2.Init.Period = 4294967295;
 	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_Base_Init(&htim2) != HAL_OK) {
+	if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-	if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) {
+	if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+	{
 		Error_Handler();
 	}
-	if (HAL_TIM_IC_Init(&htim2) != HAL_OK) {
+	if (HAL_TIM_IC_Init(&htim2) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
 	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig)
-			!= HAL_OK) {
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
 	sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
 	sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
 	sConfigIC.ICFilter = 0;
-	if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK) {
+	if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN TIM2_Init 2 */
@@ -359,7 +417,8 @@ static void MX_TIM2_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_USART1_UART_Init(void) {
+static void MX_USART1_UART_Init(void)
+{
 
 	/* USER CODE BEGIN USART1_Init 0 */
 
@@ -376,7 +435,8 @@ static void MX_USART1_UART_Init(void) {
 	huart1.Init.Mode = UART_MODE_TX_RX;
 	huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
 	huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart1) != HAL_OK) {
+	if (HAL_UART_Init(&huart1) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN USART1_Init 2 */
@@ -388,7 +448,8 @@ static void MX_USART1_UART_Init(void) {
 /**
  * Enable DMA controller clock
  */
-static void MX_DMA_Init(void) {
+static void MX_DMA_Init(void)
+{
 
 	/* DMA controller clock enable */
 	__HAL_RCC_DMA2_CLK_ENABLE();
@@ -405,8 +466,10 @@ static void MX_DMA_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_GPIO_Init(void) {
-	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
+static void MX_GPIO_Init(void)
+{
+	GPIO_InitTypeDef GPIO_InitStruct =
+	{ 0 };
 	/* USER CODE BEGIN MX_GPIO_Init_1 */
 
 	/* USER CODE END MX_GPIO_Init_1 */
@@ -440,11 +503,13 @@ static void MX_GPIO_Init(void) {
  * @brief  This function is executed in case of error occurrence.
  * @retval None
  */
-void Error_Handler(void) {
+void Error_Handler(void)
+{
 	/* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 	__disable_irq();
-	while (1) {
+	while (1)
+	{
 	}
 	/* USER CODE END Error_Handler_Debug */
 }
