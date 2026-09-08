@@ -41,7 +41,9 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_core.h \
  ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ioreq.h \
  ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_ctlreq.h \
- ../Core/Inc/MPU9250.h ../Core/Inc/UARTRingBuffer.h ../Core/Inc/NMEA.h
+ ../Core/Inc/MPU9250.h ../Core/Inc/UARTRingBuffer.h ../Core/Inc/NMEA.h \
+ ../Middlewares/ST/ARM/DSP/Inc/arm_math.h \
+ ../Drivers/CMSIS/Include/cmsis_compiler.h ../Core/Inc/EKF.h
 ../Core/Inc/main.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:
 ../Core/Inc/stm32f4xx_hal_conf.h:
@@ -89,3 +91,6 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Inc/MPU9250.h:
 ../Core/Inc/UARTRingBuffer.h:
 ../Core/Inc/NMEA.h:
+../Middlewares/ST/ARM/DSP/Inc/arm_math.h:
+../Drivers/CMSIS/Include/cmsis_compiler.h:
+../Core/Inc/EKF.h:

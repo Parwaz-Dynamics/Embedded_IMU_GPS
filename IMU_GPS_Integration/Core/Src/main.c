@@ -27,6 +27,8 @@
 #include "MPU9250.h"
 #include "UARTRingBuffer.h"
 #include "NMEA.h"
+#include "arm_math.h"
+#include "EKF.h"
 
 /* USER CODE END Includes */
 
@@ -89,6 +91,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 /* USER CODE BEGIN 0 */
 
 GPSDATA gpsData;
+IMU imu;
 
 /* USER CODE END 0 */
 
@@ -128,9 +131,6 @@ int main(void) {
 	/* USER CODE BEGIN 2 */
 
 	RingBuf_init();
-
-	// Inertial Measurement Unit
-	IMU imu;
 
 	imu.info.i2c = hi2c1;
 	imu.info.i2cAddress = 0x68;
@@ -185,7 +185,17 @@ int main(void) {
 
 				double imu_time = (double) (startTime + ppsCount + 1)
 						+ (double) (currentTimer - ppsCapturedCNT) / 10000.0f;
+
 				readMPU9250(&imu.info.i2c, imu.info.i2cAddress, &imu);
+
+				float imuData[6];
+				imuData[0] = imu.f_ib_b[0];
+				imuData[1] = imu.f_ib_b[1];
+				imuData[2] = imu.f_ib_b[2];
+				imuData[3] = imu.omega_ib_b[0];
+				imuData[4] = imu.omega_ib_b[1];
+				imuData[5] = imu.omega_ib_b[2];
+				predict(imuData, tor_i);
 
 				// --- IMU print ---
 				int len = snprintf((char*) msgOut, sizeof(msgOut),
@@ -198,10 +208,11 @@ int main(void) {
 				// --- GPS print ---
 				if (GPS_IsUpdated(&gpsData)) {
 					int gpsLen = snprintf((char*) msgOut, sizeof(msgOut),
-							"GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f\r\n", gpsData.time.secondsOfDay,
+							"GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f\r\n",
+							gpsData.time.secondsOfDay,
 							gpsData.location.latitude,
-							gpsData.location.longitude,
-							gpsData.velocity.vN, gpsData.velocity.vE);
+							gpsData.location.longitude, gpsData.velocity.vN,
+							gpsData.velocity.vE);
 					CDC_Transmit_FS(msgOut, gpsLen);
 					GPS_ResetUpdateFlag(&gpsData);
 				}
@@ -309,7 +320,7 @@ static void MX_TIM2_Init(void) {
 
 	/* USER CODE END TIM2_Init 1 */
 	htim2.Instance = TIM2;
-	htim2.Init.Prescaler = 8399;
+	htim2.Init.Prescaler = 0;
 	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
 	htim2.Init.Period = 4294967295;
 	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;

@@ -1,3 +1,4 @@
+"./Core/Src/EKF.o"
 "./Core/Src/MPU9250.o"
 "./Core/Src/NMEA.o"
 "./Core/Src/UARTRingBuffer.o"
