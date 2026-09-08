@@ -10,7 +10,7 @@
 
 typedef struct {
 	I2C_HandleTypeDef i2c;
-	uint8_t daddr;
+	uint8_t i2cAddress;
 }Info;
 
 typedef struct {

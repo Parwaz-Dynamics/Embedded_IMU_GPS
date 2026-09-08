@@ -1,4 +1,8 @@
-../Core/Src/NMEA.c:24:12:nmea_field	10
-../Core/Src/NMEA.c:45:15:nmea_to_degrees	2
-../Core/Src/NMEA.c:56:5:decodeGGA	5
-../Core/Src/NMEA.c:114:5:decodeRMC	4
+../Core/Src/NMEA.c:35:12:nmea_field	10
+../Core/Src/NMEA.c:56:15:nmea_to_degrees	2
+../Core/Src/NMEA.c:65:13:updateCourseVelocityComponents	2
+../Core/Src/NMEA.c:78:6:GPS_ResetUpdateFlag	2
+../Core/Src/NMEA.c:85:5:GPS_IsUpdated	2
+../Core/Src/NMEA.c:90:6:readGPS	10
+../Core/Src/NMEA.c:131:5:decodeGGA	6
+../Core/Src/NMEA.c:194:5:decodeRMC	5

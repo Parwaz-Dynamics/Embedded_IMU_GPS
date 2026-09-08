@@ -55,6 +55,18 @@ DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 
+// Time Synchronization
+uint8_t ppsCapturedUpdated = 1;
+int ppsCapturedCNT = 0;
+int ppsCapturedCNTprev = 0;
+
+uint8_t timeRefEstablished = 0;
+int startTime = 0;
+int ppsCount = 0;
+
+// Debugging Message
+uint8_t msgOut[256];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,13 +78,9 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
-uint8_t yesprint = 1;
-int ccrValue = 0;
-int prevccr = 0;
-
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-	ccrValue = TIM2->CCR1;
-	yesprint = 1;
+	ppsCapturedCNT = TIM2->CCR1;
+	ppsCapturedUpdated = 1;
 }
 
 /* USER CODE END PFP */
@@ -80,74 +88,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-char GGA[100];
-char RMC[100];
-
-GPSSTRUCT gpsData;
-
-int flagGGA = 0, flagRMC = 0;
-
-// GPS non-blocking state machine
-typedef enum {
-	GPS_HUNT_DOLLAR, GPS_READ_SENTENCE
-} GPS_State;
-
-GPS_State gpsState = GPS_HUNT_DOLLAR;
-char gpsSentenceBuf[128];
-uint8_t gpsSentenceIdx = 0;
-
-uint8_t gnssAvailable = 0;
-
-void readGNSS() {
-	while (IsDataAvailable()) {
-		char c = (char) UART_Read();
-
-		if (gpsState == GPS_HUNT_DOLLAR) {
-			if (c == '$') {
-				gpsSentenceBuf[0] = c;
-				gpsSentenceIdx = 1;
-				gpsState = GPS_READ_SENTENCE;
-			}
-		} else { // GPS_READ_SENTENCE
-
-			// Abort malformed sentence and restart on a new '$'
-			if (c == '$') {
-				gpsSentenceBuf[0] = c;
-				gpsSentenceIdx = 1;
-				continue;
-			}
-
-			if (gpsSentenceIdx < sizeof(gpsSentenceBuf) - 1) {
-				gpsSentenceBuf[gpsSentenceIdx++] = c;
-			}
-
-			if (c == '\n') {
-				gpsSentenceBuf[gpsSentenceIdx] = '\0';
-				gpsSentenceIdx = 0;
-				gpsState = GPS_HUNT_DOLLAR;
-
-				// Strip checksum
-				char *star = strchr(gpsSentenceBuf, '*');
-				if (star)
-					*star = '\0';
-
-				// Pass the FULL sentence: field 0 is "$GPGGA"/"$GPRMC"
-				if (strstr(gpsSentenceBuf, "GGA") != NULL) {
-					if (decodeGGA(gpsSentenceBuf, &gpsData.ggastruct) == 0) {
-						flagGGA = 2;
-						gnssAvailable = 1;
-					} else
-						flagGGA = 1;
-				} else if (strstr(gpsSentenceBuf, "RMC") != NULL) {
-					if (decodeRMC(gpsSentenceBuf, &gpsData.rmcstruct) == 0)
-						flagRMC = 2;
-					else
-						flagRMC = 1;
-				}
-			}
-		}
-	}
-}
+GPSDATA gpsData;
 
 /* USER CODE END 0 */
 
@@ -192,26 +133,19 @@ int main(void) {
 	IMU imu;
 
 	imu.info.i2c = hi2c1;
-	imu.info.daddr = 0x68;
+	imu.info.i2cAddress = 0x68;
 
-	initMPU9250(&imu.info.i2c, imu.info.daddr);
+	initMPU9250(&imu.info.i2c, imu.info.i2cAddress);
 
 // Global Positioning System
 
 // Timing and Synchronization
 	int loopTimer = TIM2->CNT;
-	float tor_i = 0.005;
+	float tor_i;
 
 	// Printing & Debugging
 
-	uint8_t msgOut[100] = "Hello World!\r\n";
-
 	HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
-
-	uint8_t initDone = 0;
-	int startTime = 0;
-	int startPPS = 0;
-	int ppsCount = 0;
 
 	/* USER CODE END 2 */
 
@@ -219,66 +153,57 @@ int main(void) {
 	/* USER CODE BEGIN WHILE */
 	while (1) {
 		// --- Non-blocking GPS parser ---
-		readGNSS();
+		readGPS();
 
-		if (!initDone && gnssAvailable) {
-			startTime = gpsData.ggastruct.tim.secOfDay;
-			prevccr = ccrValue;
+		if (!timeRefEstablished && GPS_IsUpdated(&gpsData)) {
+			startTime = gpsData.time.secondsOfDay;
+			ppsCapturedCNTprev = ppsCapturedCNT;
 
-//			int len = snprintf((char*) msgOut, sizeof(msgOut), "A %d,%d\r\n",
-//					prevccr, startTime);
-//			CDC_Transmit_FS(msgOut, len);
-			if (prevccr) {
-				initDone = 1;
+			if (ppsCapturedCNTprev) {
+				timeRefEstablished = 1;
 			}
-			gnssAvailable = 0;
+			GPS_ResetUpdateFlag(&gpsData);
 		}
 
-		if (initDone) {
+		if (timeRefEstablished) {
 			int currentTimer = TIM2->CNT;
 			if (currentTimer - loopTimer >= 50) {
 
-				tor_i = (currentTimer - loopTimer) / 10000.0f;
-
-				int imu_time_int = startTime + ppsCount;
-				float imu_time_decimal = (currentTimer - ccrValue) / 10000.0f;
-				double imu_time = (double)imu_time_int + (double)imu_time_decimal;
-				readMPU9250(&imu.info.i2c, imu.info.daddr, &imu);
-
-				// --- IMU print ---
-				int len = snprintf((char*) msgOut, sizeof(msgOut),
-						"%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
-						imu_time,
-						imu.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2],
-						imu.omega_ib_b[0], imu.omega_ib_b[1], imu.omega_ib_b[2]);
-				CDC_Transmit_FS(msgOut, len);
-
-				// --- GPS print ---
-				if (gnssAvailable == 1) {
-					uint8_t gpsBuf[120];
-					int gpsLen = snprintf((char*) gpsBuf, sizeof(gpsBuf),
-							"%0.3f,%0.6f,%0.6f\r\n",
-							gpsData.ggastruct.tim.secOfDay,
-							gpsData.ggastruct.lcation.latitude,
-							gpsData.ggastruct.lcation.longitude);
-					CDC_Transmit_FS(gpsBuf, gpsLen);
-					gnssAvailable = 0;
-				}
-
-				// --- PPS print ---
-				if (yesprint) {
-					int ppsGap = ccrValue - prevccr;
+				// --- Time Synchronization ---
+				if (ppsCapturedUpdated) {
+					int ppsGap = ppsCapturedCNT - ppsCapturedCNTprev;
 
 					int noPPSseconds = ppsGap / 10000;
 
 					ppsCount = ppsCount + noPPSseconds;
 
-//					int len = snprintf((char*) msgOut, sizeof(msgOut),
-//							"B %d,%d\r\n", ppsCount, ppsGap);
-//					CDC_Transmit_FS(msgOut, len);
+					ppsCapturedCNTprev = ppsCapturedCNT;
+					ppsCapturedUpdated = 0;
+				}
 
-					prevccr = ccrValue;
-					yesprint = 0;
+				tor_i = (currentTimer - loopTimer) / 10000.0f;
+
+				double imu_time = (double) (startTime + ppsCount + 1)
+						+ (double) (currentTimer - ppsCapturedCNT) / 10000.0f;
+				readMPU9250(&imu.info.i2c, imu.info.i2cAddress, &imu);
+
+				// --- IMU print ---
+				int len = snprintf((char*) msgOut, sizeof(msgOut),
+						"IMU,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
+						imu_time, imu.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2],
+						imu.omega_ib_b[0], imu.omega_ib_b[1],
+						imu.omega_ib_b[2]);
+				CDC_Transmit_FS(msgOut, len);
+
+				// --- GPS print ---
+				if (GPS_IsUpdated(&gpsData)) {
+					int gpsLen = snprintf((char*) msgOut, sizeof(msgOut),
+							"GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f\r\n", gpsData.time.secondsOfDay,
+							gpsData.location.latitude,
+							gpsData.location.longitude,
+							gpsData.velocity.vN, gpsData.velocity.vE);
+					CDC_Transmit_FS(msgOut, gpsLen);
+					GPS_ResetUpdateFlag(&gpsData);
 				}
 
 				loopTimer = currentTimer;

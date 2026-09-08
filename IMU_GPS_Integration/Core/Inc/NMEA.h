@@ -15,55 +15,58 @@
 #define INC_NMEA_H_
 
 typedef struct {
-	int   hour;
-	int   min;
-	float sec;        // includes fractional part (e.g. 19.50)
-	double secOfDay;  // seconds since 00:00:00 UTC
-} TIME;
+	int    hour;
+	int    minute;
+	float  seconds;       // includes fractional part (e.g. 19.50)
+	double secondsOfDay;  // seconds since 00:00:00 UTC
+} GpsTime;
 
 typedef struct {
-	double latitude;  // signed decimal degrees, South is negative
-	char   NS;
-	double longitude; // signed decimal degrees, West is negative
-	char   EW;
-} LOCATION;
+	double latitude;            // signed decimal degrees, South is negative
+	char   latitudeHemisphere;
+	double longitude;           // signed decimal degrees, West is negative
+	char   longitudeHemisphere;
+} GpsLocation;
+
+typedef struct {
+	float vN;
+	float vE;
+} GpsVelocity;
 
 typedef struct {
 	float altitude;   // metres above mean sea level
 	char  unit;
-} ALTITUDE;
+} GpsAltitude;
 
 typedef struct {
-	int Day;
-	int Mon;
-	int Yr;
-} DATE;
+	int day;
+	int month;
+	int year;
+} GpsDate;
 
 typedef struct {
-	LOCATION lcation;
-	TIME     tim;
-	int      isfixValid;
-	ALTITUDE alt;
-	int      numofsat;
-	float    hdop;     // horizontal dilution of precision
-} GGASTRUCT;
+	GpsLocation location;
+	GpsTime     time;
+	int         isFixValid;
+	GpsAltitude altitude;
+	int         satelliteCount;
+	float       hdop;
+	GpsDate     date;
+	float       speed;
+	float       course;
+	GpsVelocity velocity;
+	int         isValid;
+	int         updated;
+} GPSDATA;
 
-typedef struct {
-	DATE  date;
-	float speed;       // metres per second (converted from knots)
-	float course;      // degrees, true track over ground
-	int   isValid;
-} RMCSTRUCT;
-
-typedef struct {
-	GGASTRUCT ggastruct;
-	RMCSTRUCT rmcstruct;
-} GPSSTRUCT;
+void GPS_ResetUpdateFlag(GPSDATA *gps);
+int GPS_IsUpdated(const GPSDATA *gps);
+void readGPS(void);
 
 /* Decode a single GGA sentence. Returns 0 on success, 1 if no valid fix. */
-int decodeGGA(char *GGAbuffer, GGASTRUCT *gga);
+int decodeGGA(char *GGAbuffer, GPSDATA *gps);
 
 /* Decode a single RMC sentence. Returns 0 on success, 1 if data invalid. */
-int decodeRMC(char *RMCbuffer, RMCSTRUCT *rmc);
+int decodeRMC(char *RMCbuffer, GPSDATA *gps);
 
 #endif /* INC_NMEA_H_ */
