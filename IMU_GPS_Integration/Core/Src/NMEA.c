@@ -68,9 +68,16 @@ static void updateCourseVelocityComponents(GPSDATA *gps)
 		return;
 	}
 
+	gps->velocity.vN = 0.0f;
+	gps->velocity.vE = 0.0f;
+
+	if (!gps->velocityValid) {
+		return;
+	}
+
 	float courseRadians = gps->course * (3.14159265f / 180.0f);
 	gps->velocity.vN = gps->speed * cosf(courseRadians);
-	gps->velocity.vE  = gps->speed * sinf(courseRadians);
+	gps->velocity.vE = gps->speed * sinf(courseRadians);
 }
 
 /* ---- GGA --------------------------------------------------------------- */
@@ -78,13 +85,21 @@ static void updateCourseVelocityComponents(GPSDATA *gps)
 void GPS_ResetUpdateFlag(GPSDATA *gps)
 {
 	if (gps != NULL) {
-		gps->updated = 0;
+		gps->ggaUpdated = 0;
+		gps->rmcUpdated = 0;
+		gps->ggaTime = 0.0;
+		gps->rmcTime = 0.0;
 	}
 }
 
 int GPS_IsUpdated(const GPSDATA *gps)
 {
-	return (gps != NULL) ? gps->updated : 0;
+	if (gps == NULL) {
+		return 0;
+	}
+
+	return gps->ggaUpdated && gps->rmcUpdated
+		&& fabs(gps->ggaTime - gps->rmcTime) < 0.05;
 }
 
 void readGPS(void)
@@ -140,6 +155,8 @@ int decodeGGA(char *GGAbuffer, GPSDATA *gps)
 	nmea_field(GGAbuffer, 6, f, sizeof(f));
 	if (f[0] == '\0' || atoi(f) == 0) {
 		gps->isFixValid = 0;
+		gps->ggaUpdated = 0;
+		gps->ggaTime = 0.0;
 		return 1;
 	}
 	gps->isFixValid = 1;
@@ -184,7 +201,13 @@ int decodeGGA(char *GGAbuffer, GPSDATA *gps)
 	gps->altitude.altitude = (float)atof(f);
 	nmea_field(GGAbuffer, 10, f, sizeof(f));
 	gps->altitude.unit = f[0];
-	gps->updated = 1;
+
+	/* field 11: geoid separation */
+	nmea_field(GGAbuffer, 11, f, sizeof(f));
+	gps->altitude.geoidSeparation = (float)atof(f);
+
+	gps->ggaUpdated = 1;
+	gps->ggaTime = gps->time.secondsOfDay;
 
 	return 0;
 }
@@ -199,10 +222,23 @@ int decodeRMC(char *RMCbuffer, GPSDATA *gps)
 		return 1;
 	}
 
+	/* field 1: time hhmmss.sss (UTC) */
+	nmea_field(RMCbuffer, 1, f, sizeof(f));
+	double t  = atof(f);
+	int    hh = (int)(t / 10000);
+	int    mm = ((int)(t / 100)) % 100;
+	double ss = fmod(t, 100.0);
+	gps->time.hour = hh;
+	gps->time.minute = mm;
+	gps->time.seconds = (float)ss;
+	gps->time.secondsOfDay = hh * 3600.0 + mm * 60.0 + ss;
+
 	/* field 2: status A = valid, V = invalid */
 	nmea_field(RMCbuffer, 2, f, sizeof(f));
 	if (f[0] != 'A') {
 		gps->isValid = 0;
+		gps->rmcUpdated = 0;
+		gps->rmcTime = 0.0;
 		return 1;
 	}
 	gps->isValid = 1;
@@ -214,6 +250,7 @@ int decodeRMC(char *RMCbuffer, GPSDATA *gps)
 	/* field 8: course over ground (deg, true). Blank when stationary. */
 	nmea_field(RMCbuffer, 8, f, sizeof(f));
 	gps->course = (f[0]) ? (float)atof(f) : 0.0f;
+	gps->velocityValid = (f[0] != '\0' && gps->speed >= 0.5f) ? 1 : 0;
 	updateCourseVelocityComponents(gps);
 
 	/* field 9: date ddmmyy */
@@ -222,7 +259,8 @@ int decodeRMC(char *RMCbuffer, GPSDATA *gps)
 	gps->date.day = d / 10000;
 	gps->date.month = (d / 100) % 100;
 	gps->date.year = d % 100;
-	gps->updated = 1;
+	gps->rmcUpdated = 1;
+	gps->rmcTime = gps->time.secondsOfDay;
 
 	return 0;
 }

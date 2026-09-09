@@ -34,7 +34,8 @@ typedef struct {
 } GpsVelocity;
 
 typedef struct {
-	float altitude;   // metres above mean sea level
+	float altitude;         // metres above mean sea level
+	float geoidSeparation;  // metres, geoid separation (field 11)
 	char  unit;
 } GpsAltitude;
 
@@ -56,7 +57,11 @@ typedef struct {
 	float       course;
 	GpsVelocity velocity;
 	int         isValid;
-	int         updated;
+	int         ggaUpdated;
+	int         rmcUpdated;
+	double      ggaTime;
+	double      rmcTime;
+	int         velocityValid;
 } GPSDATA;
 
 void GPS_ResetUpdateFlag(GPSDATA *gps);

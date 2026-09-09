@@ -72,6 +72,7 @@ typedef struct
 	float S_vn;
 	float S_ve;
 	float S_vd;
+	float nis;
 	uint8_t rejected;
 } FilterOutput;
 
@@ -94,6 +95,7 @@ typedef struct
 	float gyro_bias_PSD;
 	float pos_meas_SD;
 	float vel_meas_SD;
+	float vel_d_meas_SD;
 } LC_KF_config;
 
 // Global config (defined in EKF.c)
@@ -111,6 +113,6 @@ void predict(float imu[6], float tor_i);
 // Measurement update with GNSS (caller provides lat, lon (rad), height (m)
 // and NED velocity components vn, ve, vd). The function converts to ECEF
 // internally and performs the update.
-void update(double lat_rad, double lon_rad, double h_m, float vn, float ve, float vd);
+void update(double lat_rad, double lon_rad, double h_m, float vn, float ve, float vd, int velocityValid);
 
 #endif /* INC_EKF_H_ */

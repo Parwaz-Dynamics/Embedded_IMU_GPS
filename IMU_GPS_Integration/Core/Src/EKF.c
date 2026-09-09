@@ -44,19 +44,20 @@ outputEKF ekf_out = { 0 };
 FilterOutput filter_out = { 0 };
 static float last_innovations[6] = { 0.0f };
 static float last_S[36] = { 0.0f };
+static float last_nis = 0.0f;
 static uint8_t last_rejected = 0;
 
 // Global configuration (can be tuned)
 LC_KF_config LC_KF = {
 		.init_att_unc = 0.0174533f,      // 1 deg
 		.init_vel_unc = 0.1f, .init_pos_unc = 10.0f,
-		.init_b_a_unc = 20.0f * 9.80665e-6f, // 20 micro‑g
-		.init_b_g_unc = 0.0174533f / 3600.0f, // 0.1 deg/h
+		.init_b_a_unc = 0.2f,                  // m/s^2 (~0.02 g)
+		.init_b_g_unc = 0.0087266f,            // rad/s (0.5 deg/s)
 		.gyro_noise_PSD = (0.0174533f * 0.02f / 60.0f)
 				* (0.0174533f * 0.02f / 60.0f), .accel_noise_PSD = (200.0f
 				* 9.80665e-6f) * (200.0f * 9.80665e-6f), .accel_bias_PSD =
-				1.0e-7f, .gyro_bias_PSD = 2.0e-12f, .pos_meas_SD = 2.5f,
-		.vel_meas_SD = 0.1f };
+				1.0e-5f, .gyro_bias_PSD = 1.0e-9f, .pos_meas_SD = 2.5f,
+		.vel_meas_SD = 0.1f, .vel_d_meas_SD = 1.0f };
 
 // ----------------------------------------------------------------------------
 // 3×3 matrix helpers (inline, no CMSIS‑DSP overhead)
@@ -410,6 +411,19 @@ static void DCM2Quaternion(const float C_b_e[9], float quat[4]) {
 	}
 }
 
+static void symmetrize_P(void) {
+	for (int i = 0; i < 15; i++) {
+		for (int j = i + 1; j < 15; j++) {
+			float avg = 0.5f * (x.P_matrix[i][j] + x.P_matrix[j][i]);
+			x.P_matrix[i][j] = avg;
+			x.P_matrix[j][i] = avg;
+		}
+		if (x.P_matrix[i][i] < 1e-12f) {
+			x.P_matrix[i][i] = 1e-12f;
+		}
+	}
+}
+
 static void update_output(void) {
 	double lat_rad, lon_rad, h_m;
 	float v_ned[3], C_b_n[9];
@@ -480,6 +494,7 @@ static void update_output(void) {
 	filter_out.S_vn = last_S[21];
 	filter_out.S_ve = last_S[28];
 	filter_out.S_vd = last_S[35];
+	filter_out.nis = last_nis;
 	filter_out.rejected = last_rejected;
 
 	// Cache latitude for later use (geocentric radius calc)
@@ -540,7 +555,8 @@ int format_filter_output(char *buffer, size_t buffer_size, double time_s) {
 		&filter_out.S_pd,
 		&filter_out.S_vn,
 		&filter_out.S_ve,
-		&filter_out.S_vd
+		&filter_out.S_vd,
+		&filter_out.nis
 	};
 
 	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
@@ -865,12 +881,13 @@ void predict(float imu[6], float tor_i) {
 
 	// Store back
 	memcpy(x.P_matrix, matP.pData, 225 * sizeof(float));
+	symmetrize_P();
 
 	update_output();
 }
 
 void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
-		float vd) {
+		float vd, int velocityValid) {
 	// Convert GNSS NED (lat,lon,h,vn,ve,vd) to ECEF internally
 	double GNSS_r_eb_e[3];
 	float GNSS_v_eb_e[3];
@@ -901,10 +918,17 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 	float R[36] = { 0 };
 	float pos_sd2 = LC_KF.pos_meas_SD * LC_KF.pos_meas_SD;
 	float vel_sd2 = LC_KF.vel_meas_SD * LC_KF.vel_meas_SD;
+	float vel_d_sd2 = LC_KF.vel_d_meas_SD * LC_KF.vel_d_meas_SD;
+	float vel_sd2_inflated = (10.0f * LC_KF.vel_meas_SD) * (10.0f * LC_KF.vel_meas_SD);
 	for (int i = 0; i < 3; i++) {
 		R[i * 6 + i] = pos_sd2;
 		R[(3 + i) * 6 + 3 + i] = vel_sd2;
 	}
+	if (velocityValid == 0) {
+		R[3 * 6 + 3] = vel_sd2_inflated;
+		R[4 * 6 + 4] = vel_sd2_inflated;
+	}
+	R[5 * 6 + 5] = vel_d_sd2;
 
 	// ----- 4. Flatten P (15×15) -----
 	float P_flat[225];
@@ -960,6 +984,27 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 	if (!inv6x6(S, Sinv)) {
 		// Singular – skip update
 		last_rejected = 1;
+		last_nis = 0.0f;
+		update_output();
+		return;
+	}
+
+	float nis = 0.0f;
+	float Sinv_delta_z[6] = { 0.0f };
+	for (int i = 0; i < 6; i++) {
+		float sum = 0.0f;
+		for (int j = 0; j < 6; j++) {
+			sum += Sinv[i * 6 + j] * delta_z[j];
+		}
+		Sinv_delta_z[i] = sum;
+	}
+	for (int i = 0; i < 6; i++) {
+		nis += delta_z[i] * Sinv_delta_z[i];
+	}
+	last_nis = nis;
+	if (nis > 22.46f) {
+		last_rejected = 1;
+		update_output();
 		return;
 	}
 
@@ -1090,5 +1135,6 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 		}
 	}
 
+	symmetrize_P();
 	update_output();
 }

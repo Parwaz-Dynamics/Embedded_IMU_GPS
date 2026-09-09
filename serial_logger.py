@@ -38,6 +38,8 @@ HEADER_MAP = {
         "wx",
         "wy",
         "wz",
+        "txDropCount",
+        "dtSkipCount",
     ],
     "GPS": [
         "time",
@@ -106,6 +108,7 @@ HEADER_MAP = {
         "S_vn",
         "S_ve",
         "S_vd",
+        "nis",
         "rejected",
     ],
 }
@@ -167,7 +170,7 @@ def parse_message(line: str):
     msg_type = parts[0].strip()
 
     if msg_type == "IMU":
-        return "IMU", parts[1:8]
+        return "IMU", parts[1:10]
 
     if msg_type == "GPS":
         # GPS,time,lat,lon,alt,vn,ve,hdop,satellites
