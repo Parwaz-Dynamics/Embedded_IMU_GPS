@@ -205,13 +205,13 @@ HAL_StatusTypeDef readMPU9250(I2C_HandleTypeDef *i2c, uint8_t daddr, IMU *imu)
 
 	// Accelerometer (±4G, LSB = 0.00012207 g)
 	imu->f_ib_b[0] = (int16_t) ((raw[0] << 8) | raw[1]) * 0.00012207f;
-	imu->f_ib_b[1] = (int16_t) ((raw[2] << 8) | raw[3]) * 0.00012207f;
-	imu->f_ib_b[2] = (int16_t) ((raw[4] << 8) | raw[5]) * 0.00012207f;
+	imu->f_ib_b[1] = -(int16_t) ((raw[2] << 8) | raw[3]) * 0.00012207f;
+	imu->f_ib_b[2] = -(int16_t) ((raw[4] << 8) | raw[5]) * 0.00012207f;
 
 	// Gyroscope (±500 DPS, LSB = 0.01526 deg/s)
 	imu->omega_ib_b[0] = (int16_t) ((raw[8] << 8) | raw[9]) * 0.01526f;
-	imu->omega_ib_b[1] = (int16_t) ((raw[10] << 8) | raw[11]) * 0.01526f;
-	imu->omega_ib_b[2] = (int16_t) ((raw[12] << 8) | raw[13]) * 0.01526f;
+	imu->omega_ib_b[1] = -(int16_t) ((raw[10] << 8) | raw[11]) * 0.01526f;
+	imu->omega_ib_b[2] = -(int16_t) ((raw[12] << 8) | raw[13]) * 0.01526f;
 
 	return HAL_OK;
 }

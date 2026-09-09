@@ -8,14 +8,15 @@
 #ifndef INC_EKF_H_
 #define INC_EKF_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 // EKF output structure
 typedef struct
 {
-	float timeOfValidity;
-	float latitude;
-	float longitude;
+	double timeOfValidity;
+	double latitude;
+	double longitude;
 	float altitude;
 	float vN;
 	float vE;
@@ -25,7 +26,59 @@ typedef struct
 	float yaw;
 } outputEKF;
 
+// Full filter state dump for CDC logging.
+typedef struct
+{
+	float px;
+	float py;
+	float pz;
+	float vn;
+	float ve;
+	float vd;
+	float qw;
+	float qx;
+	float qy;
+	float qz;
+	float bgx;
+	float bgy;
+	float bgz;
+	float bax;
+	float bay;
+	float baz;
+	float P_px;
+	float P_py;
+	float P_pz;
+	float P_vn;
+	float P_ve;
+	float P_vd;
+	float P_rn;
+	float P_re;
+	float P_rd;
+	float P_bgx;
+	float P_bgy;
+	float P_bgz;
+	float P_bax;
+	float P_bay;
+	float P_baz;
+	float innov_pn;
+	float innov_pe;
+	float innov_pd;
+	float innov_vn;
+	float innov_ve;
+	float innov_vd;
+	float S_pn;
+	float S_pe;
+	float S_pd;
+	float S_vn;
+	float S_ve;
+	float S_vd;
+	uint8_t rejected;
+} FilterOutput;
+
 extern outputEKF ekf_out;
+extern FilterOutput filter_out;
+
+int format_filter_output(char *buffer, size_t buffer_size, double time_s);
 
 // Kalman filter configuration (copied from MATLAB)
 typedef struct

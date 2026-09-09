@@ -67,7 +67,7 @@ int startTime = 0;
 int ppsCount = 0;
 
 // Debugging Message
-uint8_t msgOut[256];
+uint8_t msgOut[2000];
 
 /* USER CODE END PV */
 
@@ -231,13 +231,16 @@ int main(void)
 				ekf_out.timeOfValidity = imu_time;
 
 				// --- IMU print ---
-				int len = snprintf((char*) msgOut, sizeof(msgOut), "IMU,%d,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n", startTime, imu_time, imu
+				int len = snprintf((char*) msgOut, sizeof(msgOut), "IMU,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n", imu_time, imu
 						.f_ib_b[0], imu.f_ib_b[1], imu.f_ib_b[2], imu.omega_ib_b[0], imu.omega_ib_b[1], imu.omega_ib_b[2]);
 				CDC_Transmit_FS(msgOut, len);
 
 				len = snprintf((char*) msgOut, sizeof(msgOut), "EKF,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n", ekf_out
 					.timeOfValidity, ekf_out.latitude, ekf_out.longitude, ekf_out.altitude, ekf_out.vN, ekf_out
 					.vE, ekf_out.vD, ekf_out.roll, ekf_out.pitch, ekf_out.yaw);
+				CDC_Transmit_FS(msgOut, len);
+
+				len = format_filter_output((char*) msgOut, sizeof(msgOut), ekf_out.timeOfValidity);
 				CDC_Transmit_FS(msgOut, len);
 
 				// --- GPS print ---
@@ -253,9 +256,9 @@ int main(void)
 					// Correct EKF with GNSS (update converts to ECEF internally)
 					update(lat_rad, lon_rad, h_m, vn, ve, vd);
 
-					int gpsLen = snprintf((char*) msgOut, sizeof(msgOut), "GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f\r\n", gpsData
-							.time.secondsOfDay, gpsData.location.latitude, gpsData.location.longitude, gpsData.velocity
-							.vN, gpsData.velocity.vE);
+					int gpsLen = snprintf((char*) msgOut, sizeof(msgOut), "GPS,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f,%0.3f,%0.3f,%d\r\n", gpsData
+							.time.secondsOfDay, gpsData.location.latitude, gpsData.location.longitude, gpsData.altitude.altitude, gpsData.velocity
+							.vN, gpsData.velocity.vE, gpsData.hdop, gpsData.satelliteCount);
 					CDC_Transmit_FS(msgOut, gpsLen);
 
 					GPS_ResetUpdateFlag(&gpsData);
@@ -374,7 +377,7 @@ static void MX_TIM2_Init(void)
 
 	/* USER CODE END TIM2_Init 1 */
 	htim2.Instance = TIM2;
-	htim2.Init.Prescaler = 0;
+	htim2.Init.Prescaler = 8399;
 	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
 	htim2.Init.Period = 4294967295;
 	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
