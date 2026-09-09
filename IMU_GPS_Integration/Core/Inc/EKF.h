@@ -94,6 +94,7 @@ typedef struct
 	float accel_bias_PSD;
 	float gyro_bias_PSD;
 	float pos_meas_SD;
+	float pos_d_meas_SD;
 	float vel_meas_SD;
 	float vel_d_meas_SD;
 } LC_KF_config;

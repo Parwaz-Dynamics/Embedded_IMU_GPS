@@ -47,16 +47,20 @@ static float last_S[36] = { 0.0f };
 static float last_nis = 0.0f;
 static uint8_t last_rejected = 0;
 
-// Global configuration (can be tuned)
-LC_KF_config LC_KF = {
-		.init_att_unc = 0.0174533f,      // 1 deg
+LC_KF_config LC_KF = { .init_att_unc = 0.0174533f, // 1 deg — keep (see caveat below)
 		.init_vel_unc = 0.1f, .init_pos_unc = 10.0f,
-		.init_b_a_unc = 0.2f,                  // m/s^2 (~0.02 g)
-		.init_b_g_unc = 0.0087266f,            // rad/s (0.5 deg/s)
-		.gyro_noise_PSD = (0.0174533f * 0.02f / 60.0f)
-				* (0.0174533f * 0.02f / 60.0f), .accel_noise_PSD = (200.0f
-				* 9.80665e-6f) * (200.0f * 9.80665e-6f), .accel_bias_PSD =
-				1.0e-5f, .gyro_bias_PSD = 1.0e-9f, .pos_meas_SD = 2.5f,
+
+		.init_b_a_unc = 0.05f,        // was 0.2  — see seeding note
+		.init_b_g_unc = 0.001f,       // was 0.0087 (0.06 deg/s)
+
+		.gyro_noise_PSD = 1.2e-8f,      // was 3.39e-11  <-- the big one
+		.accel_noise_PSD = 1.0e-5f,      // was 3.85e-6
+
+		.accel_bias_PSD = 3.0e-7f,      // was 1e-5
+		.gyro_bias_PSD = 5.0e-11f,     // was 1e-9
+
+		.pos_meas_SD = 1.0f,         // was 2.5 (horizontal)
+		.pos_d_meas_SD = 2.5f,         // new: vertical, GPS is ~3x worse
 		.vel_meas_SD = 0.1f, .vel_d_meas_SD = 1.0f };
 
 // ----------------------------------------------------------------------------
@@ -512,55 +516,24 @@ int format_filter_output(char *buffer, size_t buffer_size, double time_s) {
 		return len;
 	}
 
-	const float *values[] = {
-		&filter_out.px,
-		&filter_out.py,
-		&filter_out.pz,
-		&filter_out.vn,
-		&filter_out.ve,
-		&filter_out.vd,
-		&filter_out.qw,
-		&filter_out.qx,
-		&filter_out.qy,
-		&filter_out.qz,
-		&filter_out.bgx,
-		&filter_out.bgy,
-		&filter_out.bgz,
-		&filter_out.bax,
-		&filter_out.bay,
-		&filter_out.baz,
-		&filter_out.P_px,
-		&filter_out.P_py,
-		&filter_out.P_pz,
-		&filter_out.P_vn,
-		&filter_out.P_ve,
-		&filter_out.P_vd,
-		&filter_out.P_rn,
-		&filter_out.P_re,
-		&filter_out.P_rd,
-		&filter_out.P_bgx,
-		&filter_out.P_bgy,
-		&filter_out.P_bgz,
-		&filter_out.P_bax,
-		&filter_out.P_bay,
-		&filter_out.P_baz,
-		&filter_out.innov_pn,
-		&filter_out.innov_pe,
-		&filter_out.innov_pd,
-		&filter_out.innov_vn,
-		&filter_out.innov_ve,
-		&filter_out.innov_vd,
-		&filter_out.S_pn,
-		&filter_out.S_pe,
-		&filter_out.S_pd,
-		&filter_out.S_vn,
-		&filter_out.S_ve,
-		&filter_out.S_vd,
-		&filter_out.nis
-	};
+	const float *values[] = { &filter_out.px, &filter_out.py, &filter_out.pz,
+			&filter_out.vn, &filter_out.ve, &filter_out.vd, &filter_out.qw,
+			&filter_out.qx, &filter_out.qy, &filter_out.qz, &filter_out.bgx,
+			&filter_out.bgy, &filter_out.bgz, &filter_out.bax, &filter_out.bay,
+			&filter_out.baz, &filter_out.P_px, &filter_out.P_py,
+			&filter_out.P_pz, &filter_out.P_vn, &filter_out.P_ve,
+			&filter_out.P_vd, &filter_out.P_rn, &filter_out.P_re,
+			&filter_out.P_rd, &filter_out.P_bgx, &filter_out.P_bgy,
+			&filter_out.P_bgz, &filter_out.P_bax, &filter_out.P_bay,
+			&filter_out.P_baz, &filter_out.innov_pn, &filter_out.innov_pe,
+			&filter_out.innov_pd, &filter_out.innov_vn, &filter_out.innov_ve,
+			&filter_out.innov_vd, &filter_out.S_pn, &filter_out.S_pe,
+			&filter_out.S_pd, &filter_out.S_vn, &filter_out.S_ve,
+			&filter_out.S_vd, &filter_out.nis };
 
 	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
-		int written = snprintf(buffer + used, buffer_size - used, ",%0.6f", *values[i]);
+		int written = snprintf(buffer + used, buffer_size - used, ",%0.6f",
+				*values[i]);
 		if (written < 0) {
 			return written;
 		}
@@ -915,20 +888,38 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 		H[(3 + i) * 15 + 3 + i] = -1.0f;
 
 	// ----- 3. Measurement noise R (6×6) -----
+	// --- R in NED, then rotate to ECEF: R_e = C_e_n' * R_n * C_e_n ---
+	double sL = sin(lat_rad), cL = cos(lat_rad);
+	double sO = sin(lon_rad), cO = cos(lon_rad);
+
+	// C_e_n maps ECEF -> NED (rows: N, E, D), same layout as elsewhere in this file
+	float C_e_n[9] = { (float) (-sL * cO), (float) (-sL * sO), (float) cL,
+			(float) (-sO), (float) cO, 0.0f, (float) (-cL * cO), (float) (-cL
+					* sO), (float) (-sL) };
+
+	float pn2 = LC_KF.pos_meas_SD * LC_KF.pos_meas_SD;
+	float pd2 = LC_KF.pos_d_meas_SD * LC_KF.pos_d_meas_SD;
+	float vn2 = LC_KF.vel_meas_SD * LC_KF.vel_meas_SD;
+	float vd2 = LC_KF.vel_d_meas_SD * LC_KF.vel_d_meas_SD;
+
+	if (!velocityValid)
+		vn2 *= 100.0f;   // your existing 10x SD inflation
+
+	float Rn_pos[3] = { pn2, pn2, pd2 };
+	float Rn_vel[3] = { vn2, vn2, vd2 };
+
 	float R[36] = { 0 };
-	float pos_sd2 = LC_KF.pos_meas_SD * LC_KF.pos_meas_SD;
-	float vel_sd2 = LC_KF.vel_meas_SD * LC_KF.vel_meas_SD;
-	float vel_d_sd2 = LC_KF.vel_d_meas_SD * LC_KF.vel_d_meas_SD;
-	float vel_sd2_inflated = (10.0f * LC_KF.vel_meas_SD) * (10.0f * LC_KF.vel_meas_SD);
-	for (int i = 0; i < 3; i++) {
-		R[i * 6 + i] = pos_sd2;
-		R[(3 + i) * 6 + 3 + i] = vel_sd2;
+	for (int a = 0; a < 3; a++) {
+		for (int b = 0; b < 3; b++) {
+			float sp = 0.0f, sv = 0.0f;
+			for (int k = 0; k < 3; k++) {          // C_e_n' * diag * C_e_n
+				sp += C_e_n[k * 3 + a] * Rn_pos[k] * C_e_n[k * 3 + b];
+				sv += C_e_n[k * 3 + a] * Rn_vel[k] * C_e_n[k * 3 + b];
+			}
+			R[a * 6 + b] = sp;
+			R[(3 + a) * 6 + (3 + b)] = sv;
+		}
 	}
-	if (velocityValid == 0) {
-		R[3 * 6 + 3] = vel_sd2_inflated;
-		R[4 * 6 + 4] = vel_sd2_inflated;
-	}
-	R[5 * 6 + 5] = vel_d_sd2;
 
 	// ----- 4. Flatten P (15×15) -----
 	float P_flat[225];
