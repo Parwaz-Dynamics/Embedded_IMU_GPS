@@ -316,7 +316,7 @@ int main(void) {
 									gpsData.time.secondsOfDay,
 									gpsData.location.latitude,
 									gpsData.location.longitude,
-									gpsData.altitude.altitude,
+									gpsData.altitude.altitude+ gpsData.altitude.geoidSeparation,
 									gpsData.velocity.vN, gpsData.velocity.vE,
 									gpsData.hdop, gpsData.satelliteCount);
 					cdcSend(msgOut, gpsLen);
@@ -330,8 +330,7 @@ int main(void) {
 					float vd = 0.0f;   // not provided, assume zero
 
 					// Correct EKF with GNSS (update converts to ECEF internally)
-					update(lat_rad, lon_rad, h_m, vn, ve, vd,
-							gpsData.velocityValid);
+					update(lat_rad, lon_rad, h_m, vn, ve, vd, gpsData.velocityValid, gpsData.hdop);
 
 					GPS_ResetUpdateFlag(&gpsData);
 				}

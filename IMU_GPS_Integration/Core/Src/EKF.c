@@ -415,16 +415,23 @@ static void DCM2Quaternion(const float C_b_e[9], float quat[4]) {
 	}
 }
 
-static void symmetrize_P(void) {
-	for (int i = 0; i < 15; i++) {
-		for (int j = i + 1; j < 15; j++) {
-			float avg = 0.5f * (x.P_matrix[i][j] + x.P_matrix[j][i]);
-			x.P_matrix[i][j] = avg;
-			x.P_matrix[j][i] = avg;
+static const float P_floor[15] = {
+    1e-6f, 1e-6f, 1e-6f,     // attitude   (1e-3 rad)^2
+    1e-4f, 1e-4f, 1e-4f,     // velocity   (0.01 m/s)^2
+    0.01f, 0.01f, 0.01f,     // position   (0.1 m)^2
+    1e-4f, 1e-4f, 1e-4f,     // accel bias (0.01 m/s^2)^2
+    1e-8f, 1e-8f, 1e-8f };   // gyro bias  (1e-4 rad/s)^2
+
+static void symmetrize_P(void)
+{
+	for (int a = 0; a < 15; a++) {
+		for (int b = a + 1; b < 15; b++) {
+			float m = 0.5f * (x.P_matrix[a][b] + x.P_matrix[b][a]);
+			x.P_matrix[a][b] = m;
+			x.P_matrix[b][a] = m;
 		}
-		if (x.P_matrix[i][i] < 1e-12f) {
-			x.P_matrix[i][i] = 1e-12f;
-		}
+		if (x.P_matrix[a][a] < P_floor[a])
+			x.P_matrix[a][a] = P_floor[a];
 	}
 }
 
@@ -820,6 +827,7 @@ void predict(float imu[6], float tor_i) {
 	for (int i = 0; i < 3; i++) {
 		Q[i * 15 + i] = gyro_noise;          // attitude (gyro noise)
 		Q[(3 + i) * 15 + 3 + i] = accel_noise;   // velocity (accel noise)
+		Q[(6 + i) * 15 + 6 + i] = 1.0e-4f * tor_i; // position (keeps P_pos alive)
 		Q[(9 + i) * 15 + 9 + i] = accel_bias;    // accel bias
 		Q[(12 + i) * 15 + 12 + i] = gyro_bias;   // gyro bias
 	}
@@ -859,51 +867,101 @@ void predict(float imu[6], float tor_i) {
 	update_output();
 }
 
+static int rejectCount = 0;
+
+/* After N consecutive rejections the filter is locked out and the INS is
+ * free-running. Snap position and velocity back to the GNSS fix and reset
+ * their covariance; keep the attitude and bias estimates, which are still
+ * the best available. */
+#define MAX_CONSEC_REJECTS 10
+
+static void reject_watchdog(const double GNSS_r_eb_e[3],
+		const float GNSS_v_eb_e[3]) {
+	rejectCount++;
+	if (rejectCount < MAX_CONSEC_REJECTS)
+		return;
+
+	for (int i = 0; i < 3; i++) {
+		x.est_r_eb_e[i] = GNSS_r_eb_e[i];
+		x.est_v_eb_e[i] = GNSS_v_eb_e[i];
+	}
+
+	// Zero the velocity (3..5) and position (6..8) rows and columns, then
+	// restore their initial variances. Cross-terms to attitude and bias are
+	// no longer valid after the snap, so they must go too.
+	for (int a = 0; a < 15; a++) {
+		for (int b = 0; b < 15; b++) {
+			if ((a >= 3 && a < 9) || (b >= 3 && b < 9))
+				x.P_matrix[a][b] = 0.0f;
+		}
+	}
+	for (int k = 3; k < 6; k++)
+		x.P_matrix[k][k] = LC_KF.init_vel_unc * LC_KF.init_vel_unc;
+	for (int k = 6; k < 9; k++)
+		x.P_matrix[k][k] = LC_KF.init_pos_unc * LC_KF.init_pos_unc;
+
+	rejectCount = 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Replaces update() in EKF.c (old lines 869-1138).
+ * Changes vs previous version:
+ *   - signature takes hdop
+ *   - R position block scaled by HDOP
+ *   - rejectCount watchdog: after 10 consecutive rejections, reinitialise
+ *     position/velocity from the GNSS fix and reset their covariance
+ * ------------------------------------------------------------------------- */
+
 void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
-		float vd, int velocityValid) {
+		float vd, int velocityValid, float hdop) {
 	// Convert GNSS NED (lat,lon,h,vn,ve,vd) to ECEF internally
 	double GNSS_r_eb_e[3];
 	float GNSS_v_eb_e[3];
 	pv_NED2ECEF(lat_rad, lon_rad, h_m, vn, ve, vd, GNSS_r_eb_e, GNSS_v_eb_e);
+
 	// ----- 1. Innovation -----
 	float delta_z[6];
 	for (int i = 0; i < 3; i++) {
-		delta_z[i] = (float) (GNSS_r_eb_e[i] - x.est_r_eb_e[i]); // both double now
+		delta_z[i] = (float) (GNSS_r_eb_e[i] - x.est_r_eb_e[i]);
 		delta_z[3 + i] = GNSS_v_eb_e[i] - x.est_v_eb_e[i];
 	}
-	last_innovations[0] = delta_z[0];
-	last_innovations[1] = delta_z[1];
-	last_innovations[2] = delta_z[2];
-	last_innovations[3] = delta_z[3];
-	last_innovations[4] = delta_z[4];
-	last_innovations[5] = delta_z[5];
+	for (int i = 0; i < 6; i++)
+		last_innovations[i] = delta_z[i];
 
-	// ----- 2. Measurement matrix H (6×15) -----
-	float H[90] = { 0 };  // 6*15
-	// H(1:3, 7:9) = -I
+	// ----- 2. Measurement matrix H (6x15) -----
+	float H[90] = { 0 };
 	for (int i = 0; i < 3; i++)
-		H[i * 15 + 6 + i] = -1.0f;
-	// H(4:6, 4:6) = -I
+		H[i * 15 + 6 + i] = -1.0f;          // H(1:3, 7:9) = -I
 	for (int i = 0; i < 3; i++)
-		H[(3 + i) * 15 + 3 + i] = -1.0f;
+		H[(3 + i) * 15 + 3 + i] = -1.0f;    // H(4:6, 4:6) = -I
 
-	// ----- 3. Measurement noise R (6×6) -----
-	// --- R in NED, then rotate to ECEF: R_e = C_e_n' * R_n * C_e_n ---
+	// ----- 3. Measurement noise R (6x6) -----
+	// Build R in NED, then rotate to ECEF: R_e = C_e_n' * R_n * C_e_n
 	double sL = sin(lat_rad), cL = cos(lat_rad);
 	double sO = sin(lon_rad), cO = cos(lon_rad);
 
-	// C_e_n maps ECEF -> NED (rows: N, E, D), same layout as elsewhere in this file
 	float C_e_n[9] = { (float) (-sL * cO), (float) (-sL * sO), (float) cL,
 			(float) (-sO), (float) cO, 0.0f, (float) (-cL * cO), (float) (-cL
 					* sO), (float) (-sL) };
 
-	float pn2 = LC_KF.pos_meas_SD * LC_KF.pos_meas_SD;
-	float pd2 = LC_KF.pos_d_meas_SD * LC_KF.pos_d_meas_SD;
+	// Scale the position noise with the reported HDOP. Clamp to a sane range:
+	// below 0.5 the receiver is over-reporting, above 10 the fix is junk.
+	float hd = hdop;
+	if (!(hd > 0.5f))
+		hd = 0.5f;
+	if (hd > 10.0f)
+		hd = 10.0f;
+
+	float pos_sd = LC_KF.pos_meas_SD * hd;
+	float pos_d_sd = LC_KF.pos_d_meas_SD * hd;
+
+	float pn2 = pos_sd * pos_sd;
+	float pd2 = pos_d_sd * pos_d_sd;
 	float vn2 = LC_KF.vel_meas_SD * LC_KF.vel_meas_SD;
 	float vd2 = LC_KF.vel_d_meas_SD * LC_KF.vel_d_meas_SD;
 
 	if (!velocityValid)
-		vn2 *= 100.0f;   // your existing 10x SD inflation
+		vn2 *= 100.0f;   // 10x SD inflation when the course field is unusable
 
 	float Rn_pos[3] = { pn2, pn2, pd2 };
 	float Rn_vel[3] = { vn2, vn2, vd2 };
@@ -921,15 +979,15 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 		}
 	}
 
-	// ----- 4. Flatten P (15×15) -----
+	// ----- 4. Flatten P (15x15) -----
 	float P_flat[225];
 	for (int i = 0; i < 15; i++) {
 		for (int j = 0; j < 15; j++)
 			P_flat[i * 15 + j] = x.P_matrix[i][j];
 	}
 
-	// ----- 5. Compute HP = H * P (6×15) -----
-	float HP[90]; // 6*15
+	// ----- 5. HP = H * P (6x15) -----
+	float HP[90];
 	for (int i = 0; i < 6; i++) {
 		for (int j = 0; j < 15; j++) {
 			float sum = 0.0f;
@@ -940,31 +998,31 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 		}
 	}
 
-	// ----- 6. S = HP * H' + R (6×6) -----
+	// ----- 6. S = HP * H' + R (6x6) -----
 	float S[36] = { 0 };
 	for (int i = 0; i < 6; i++) {
 		for (int j = 0; j < 6; j++) {
 			float sum = 0.0f;
 			for (int k = 0; k < 15; k++) {
-				sum += HP[i * 15 + k] * H[j * 15 + k]; // H' column j
+				sum += HP[i * 15 + k] * H[j * 15 + k];
 			}
 			S[i * 6 + j] = sum + R[i * 6 + j];
 		}
 	}
 
-	// ----- 7. Compute Kalman gain K = P * H' * inv(S) -----
+	// ----- 7. Kalman gain K = P * H' * inv(S) -----
 	for (int i = 0; i < 36; i++) {
 		last_S[i] = S[i];
 	}
 	last_rejected = 0;
 
-	// PHt = P * H' (15×6)
-	float PHt[90]; // 15*6
+	// PHt = P * H' (15x6)
+	float PHt[90];
 	for (int i = 0; i < 15; i++) {
 		for (int j = 0; j < 6; j++) {
 			float sum = 0.0f;
 			for (int k = 0; k < 15; k++) {
-				sum += P_flat[i * 15 + k] * H[j * 15 + k]; // H' column j
+				sum += P_flat[i * 15 + k] * H[j * 15 + k];
 			}
 			PHt[i * 6 + j] = sum;
 		}
@@ -973,9 +1031,9 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 	// Inverse of S
 	float Sinv[36];
 	if (!inv6x6(S, Sinv)) {
-		// Singular – skip update
 		last_rejected = 1;
 		last_nis = 0.0f;
+		reject_watchdog(GNSS_r_eb_e, GNSS_v_eb_e);
 		update_output();
 		return;
 	}
@@ -993,11 +1051,16 @@ void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 		nis += delta_z[i] * Sinv_delta_z[i];
 	}
 	last_nis = nis;
-	if (nis > 22.46f) {
+
+	// Gate. The !(nis > 0) form also catches NaN and a non-PD S.
+	if (!(nis > 0.0f) || nis > 22.46f) {
 		last_rejected = 1;
+		reject_watchdog(GNSS_r_eb_e, GNSS_v_eb_e);
 		update_output();
 		return;
 	}
+
+	rejectCount = 0;   // measurement accepted
 
 	// K = PHt * Sinv (15×6)
 	float K[90]; // 15*6

@@ -64,8 +64,8 @@ all: main-build
 main-build: IMU_GPS_Integration.elf secondary-outputs
 
 # Tool invocations
-IMU_GPS_Integration.elf IMU_GPS_Integration.map: $(OBJS) $(USER_OBJS) C:\Users\Abdullah-Wasim\Desktop\Embedded_IMU_GPS\IMU_GPS_Integration\STM32F401CCUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "IMU_GPS_Integration.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\Abdullah-Wasim\Desktop\Embedded_IMU_GPS\IMU_GPS_Integration\STM32F401CCUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="IMU_GPS_Integration.map" -Wl,--gc-sections -static -L../Middlewares/ST/ARM/DSP/Lib --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -Wl,--end-group
+IMU_GPS_Integration.elf IMU_GPS_Integration.map: $(OBJS) $(USER_OBJS) C:\Users\Abdullah\Desktop\Parwaz\ Dynamics\Embedded_IMU_GPS\IMU_GPS_Integration\STM32F401CCUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "IMU_GPS_Integration.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\Abdullah\Desktop\Parwaz Dynamics\Embedded_IMU_GPS\IMU_GPS_Integration\STM32F401CCUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="IMU_GPS_Integration.map" -Wl,--gc-sections -static -L../Middlewares/ST/ARM/DSP/Lib --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

@@ -114,6 +114,6 @@ void predict(float imu[6], float tor_i);
 // Measurement update with GNSS (caller provides lat, lon (rad), height (m)
 // and NED velocity components vn, ve, vd). The function converts to ECEF
 // internally and performs the update.
-void update(double lat_rad, double lon_rad, double h_m, float vn, float ve, float vd, int velocityValid);
+void update(double lat_rad, double lon_rad, double h_m, float vn, float ve, float vd, int velocityValid, float hdop);
 
 #endif /* INC_EKF_H_ */
