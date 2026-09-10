@@ -1,0 +1,5 @@
+../Core/Src/Logging.c:27:24:ringUsed	4	static
+../Core/Src/Logging.c:32:24:ringFree	8	static
+../Core/Src/Logging.c:39:12:cdcTxBusy	16	static
+../Core/Src/Logging.c:50:5:cdcPush	48	static
+../Core/Src/Logging.c:79:6:cdcPump	24	static

@@ -171,6 +171,9 @@ int main(void) {
 	int loopTimer = TIM2->CNT;
 	float tor_i;
 
+	int filterTimer = TIM2->CNT;
+	uint8_t ekfUpdated = 0;
+
 	// Printing & Debugging
 
 	HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
@@ -280,10 +283,10 @@ int main(void) {
 				imuData[4] = imu.omega_ib_b[1] * 0.0174533f;
 				imuData[5] = imu.omega_ib_b[2] * 0.0174533f;
 
-				predict(imuData, tor_i);
-
 				// Update timestamp and print EKF output
 				ekf_out.timeOfValidity = imu_time;
+
+				predict(imuData, tor_i);
 
 				// --- IMU print ---
 				int len =
@@ -295,19 +298,6 @@ int main(void) {
 								txDropCount, dtSkipCount);
 				cdcSend(msgOut, len);
 
-				len =
-						snprintf((char*) msgOut, sizeof(msgOut),
-								"EKF,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
-								ekf_out.timeOfValidity, ekf_out.latitude,
-								ekf_out.longitude, ekf_out.altitude, ekf_out.vN,
-								ekf_out.vE, ekf_out.vD, ekf_out.roll,
-								ekf_out.pitch, ekf_out.yaw);
-				cdcSend(msgOut, len);
-
-				len = format_filter_output((char*) msgOut, sizeof(msgOut),
-						ekf_out.timeOfValidity);
-				cdcSend(msgOut, len);
-
 				// --- GPS print ---
 				if (GPS_IsUpdated(&gpsData)) {
 					int gpsLen =
@@ -316,7 +306,8 @@ int main(void) {
 									gpsData.time.secondsOfDay,
 									gpsData.location.latitude,
 									gpsData.location.longitude,
-									gpsData.altitude.altitude+ gpsData.altitude.geoidSeparation,
+									gpsData.altitude.altitude
+											+ gpsData.altitude.geoidSeparation,
 									gpsData.velocity.vN, gpsData.velocity.vE,
 									gpsData.hdop, gpsData.satelliteCount);
 					cdcSend(msgOut, gpsLen);
@@ -330,13 +321,35 @@ int main(void) {
 					float vd = 0.0f;   // not provided, assume zero
 
 					// Correct EKF with GNSS (update converts to ECEF internally)
-					update(lat_rad, lon_rad, h_m, vn, ve, vd, gpsData.velocityValid, gpsData.hdop);
+					update(lat_rad, lon_rad, h_m, vn, ve, vd,
+							gpsData.velocityValid, gpsData.hdop);
 
 					GPS_ResetUpdateFlag(&gpsData);
+					ekfUpdated = 1;
 				}
 
 				loopTimer = currentTimer;
 			}
+
+			int currentfilterTimer = TIM2->CNT;
+			if ((currentfilterTimer - filterTimer >= 50 * 20) || ekfUpdated) {
+				filterTimer = currentfilterTimer;
+				ekfUpdated = 0;
+
+				int len = format_filter_output((char*) msgOut, sizeof(msgOut),
+						ekf_out.timeOfValidity);
+				cdcSend(msgOut, len);
+
+				len =
+						snprintf((char*) msgOut, sizeof(msgOut),
+								"EKF,%0.3f,%0.6f,%0.6f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\r\n",
+								ekf_out.timeOfValidity, ekf_out.latitude,
+								ekf_out.longitude, ekf_out.altitude, ekf_out.vN,
+								ekf_out.vE, ekf_out.vD, ekf_out.roll,
+								ekf_out.pitch, ekf_out.yaw);
+				cdcSend(msgOut, len);
+			}
+
 		}
 		/* USER CODE END WHILE */
 

@@ -560,6 +560,25 @@ int format_filter_output(char *buffer, size_t buffer_size, double time_s) {
 }
 
 // ----------------------------------------------------------------------------
+// Covariance propagation is decimated: the state is mechanized every IMU
+// sample, but P = Phi*P*Phi' + Q runs once every COV_DECIMATE samples with the
+// accumulated interval. At 192 Hz in float32 the per-step increments are too
+// small relative to P and rounding makes P lose positive-definiteness
+// (negative NIS, runaway yaw). Replay of the static log: N=1 diverges,
+// N>=5 matches a double-precision reference.
+// ----------------------------------------------------------------------------
+#define COV_DECIMATE 10          // 192 Hz / 10 = ~19 Hz covariance rate
+
+static int cov_n = 0;            // IMU samples accumulated
+static float cov_tor = 0.0f;     // accumulated interval (s)
+static float cov_fsum[3];        // integral of bias-corrected f (body), for average
+static double cov_L_old;         // latitude at start of interval
+static int cov_have_L = 0;
+static float cov_C[9];           // attitude at end of interval
+static double cov_r[3];          // position at end of interval
+static void flush_cov(void);
+
+// ----------------------------------------------------------------------------
 // Initialise the global EKF state (call once before first predict)
 // ----------------------------------------------------------------------------
 void init_EKF(double lat_rad, double lon_rad, double h_m, float vn, float ve,
@@ -599,6 +618,11 @@ void init_EKF(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 					* LC_KF.init_b_g_unc, LC_KF.init_b_g_unc
 					* LC_KF.init_b_g_unc };
 	diag_matrix_15(P_diag, (float*) x.P_matrix);
+	cov_n = 0;
+	cov_tor = 0.0f;
+	cov_have_L = 0;
+	for (int i = 0; i < 3; i++)
+		cov_fsum[i] = 0.0f;
 }
 
 // ----------------------------------------------------------------------------
@@ -618,14 +642,16 @@ void predict(float imu[6], float tor_i) {
 	memcpy(old_v, x.est_v_eb_e, 3 * sizeof(float));
 	float old_C[9];
 	memcpy(old_C, x.est_C_eb_e, 9 * sizeof(float));
-	float old_P[225];
-	memcpy(old_P, x.P_matrix, 225 * sizeof(float));
 
-	// Extract old latitude for geocentric radius in Phi
-	double est_L_b_old, dummy_lon, dummy_h;
-	float dummy_vned[3], dummy_Cbn[9];
-	ECEF2NED(old_r, old_v, old_C, &est_L_b_old, &dummy_lon, &dummy_h,
-			dummy_vned, dummy_Cbn);
+	// Latitude at the start of the covariance interval (for Phi). Only
+	// needed once per interval, so skip the costly conversion otherwise.
+	if (!cov_have_L) {
+		double dummy_lon, dummy_h;
+		float dummy_vned[3], dummy_Cbn[9];
+		ECEF2NED(old_r, old_v, old_C, &cov_L_old, &dummy_lon, &dummy_h,
+				dummy_vned, dummy_Cbn);
+		cov_have_L = 1;
+	}
 
 	// ----- 3. Compute delta angles -----
 	float alpha[3] = { w_corrected[0] * tor_i, w_corrected[1] * tor_i,
@@ -744,6 +770,34 @@ void predict(float imu[6], float tor_i) {
 		r_new[i] = old_r[i] + 0.5 * tor_i * (old_v[i] + v_new[i]);
 	memcpy(x.est_r_eb_e, r_new, 3 * sizeof(double));
 
+	// ----- 8. Accumulate for covariance propagation -----
+	for (int i = 0; i < 3; i++)
+		cov_fsum[i] += f_corrected[i] * tor_i;
+	cov_tor += tor_i;
+	cov_n++;
+	memcpy(cov_C, C_new, 9 * sizeof(float));
+	memcpy(cov_r, r_new, 3 * sizeof(double));
+	if (cov_n >= COV_DECIMATE)
+		flush_cov();
+
+	update_output();
+}
+
+// Propagate P over the accumulated interval. Called every COV_DECIMATE
+// samples and always before a measurement update.
+static void flush_cov(void) {
+	if (cov_n == 0) return;
+	float tor_c = cov_tor;
+	float f_avg[3] = { cov_fsum[0] / tor_c, cov_fsum[1] / tor_c, cov_fsum[2]
+			/ tor_c };
+	float C_new[9];
+	memcpy(C_new, cov_C, 9 * sizeof(float));
+	double r_new[3];
+	memcpy(r_new, cov_r, 3 * sizeof(double));
+	double est_L_b_old = cov_L_old;
+	float old_P[225];
+	memcpy(old_P, x.P_matrix, 225 * sizeof(float));
+
 	// ----- 8. Covariance propagation (15×15) -----
 	// Build Phi matrix
 	float Phi[225] = { 0 };
@@ -756,21 +810,21 @@ void predict(float imu[6], float tor_i) {
 		Phi[i * 15 + i] = 1.0f;
 	for (int i = 0; i < 3; i++)
 		for (int j = 0; j < 3; j++)
-			Phi[i * 15 + j] -= Omega_ie_skew[i * 3 + j] * tor_i;
+			Phi[i * 15 + j] -= Omega_ie_skew[i * 3 + j] * tor_c;
 
 	// Phi(1:3,13:15) = C_b_e * dt
 	for (int i = 0; i < 3; i++)
 		for (int j = 0; j < 3; j++)
-			Phi[i * 15 + 12 + j] = C_new[i * 3 + j] * tor_i;
+			Phi[i * 15 + 12 + j] = C_new[i * 3 + j] * tor_c;
 
 	// Phi(4:6,1:3) = -dt * skew(C_b_e * f_ib_b)
 	float Cf_vec[3];
-	matvec3(C_new, f_corrected, Cf_vec);   // use C_new (new attitude)
+	matvec3(C_new, f_avg, Cf_vec);   // use C_new (new attitude)
 	float skew_Cf[9];
 	skew3(Cf_vec, skew_Cf);
 	for (int i = 0; i < 3; i++)
 		for (int j = 0; j < 3; j++)
-			Phi[(3 + i) * 15 + j] = -tor_i * skew_Cf[i * 3 + j];
+			Phi[(3 + i) * 15 + j] = -tor_c * skew_Cf[i * 3 + j];
 
 	// Phi(4:6,4:6) = I - 2*Ω_ie*dt
 	for (int i = 0; i < 3; i++)
@@ -778,9 +832,9 @@ void predict(float imu[6], float tor_i) {
 	for (int i = 0; i < 3; i++)
 		for (int j = 0; j < 3; j++)
 			Phi[(3 + i) * 15 + 3 + j] -= 2.0f * Omega_ie_skew[i * 3 + j]
-					* tor_i;
+					* tor_c;
 
-	// Phi(4:6,7:9) = -tor_i * 2 * Gravity_ECEF(r_new) / geocentric_radius * r_new_hat'
+	// Phi(4:6,7:9) = -tor_c * 2 * Gravity_ECEF(r_new) / geocentric_radius * r_new_hat'
 	// geocentric_radius from MATLAB: R_0/sqrt(1-(e*sin(L))^2) * sqrt(cos(L)^2 + (1-e^2)^2*sin(L)^2)
 	{
 		const double e_val = 0.0818191908425;
@@ -803,7 +857,7 @@ void predict(float imu[6], float tor_i) {
 		if (r_norm > 1e-12f) {
 			for (int i = 0; i < 3; i++)
 				for (int j = 0; j < 3; j++)
-					Phi[(3 + i) * 15 + 6 + j] = -tor_i * 2.0f * g_new[i]
+					Phi[(3 + i) * 15 + 6 + j] = -tor_c * 2.0f * g_new[i]
 							/ (float) geocentric_radius
 							* ((float) r_new[j] / r_norm);
 		}
@@ -812,22 +866,22 @@ void predict(float imu[6], float tor_i) {
 	// Phi(4:6,10:12) = C_b_e * dt
 	for (int i = 0; i < 3; i++)
 		for (int j = 0; j < 3; j++)
-			Phi[(3 + i) * 15 + 9 + j] = C_new[i * 3 + j] * tor_i;
+			Phi[(3 + i) * 15 + 9 + j] = C_new[i * 3 + j] * tor_c;
 
 	// Phi(7:9,4:6) = I * dt
 	for (int i = 0; i < 3; i++)
-		Phi[(6 + i) * 15 + 3 + i] = tor_i;
+		Phi[(6 + i) * 15 + 3 + i] = tor_c;
 
 	// Q matrix (discrete noise)
 	float Q[225] = { 0 };
-	float gyro_noise = LC_KF.gyro_noise_PSD * tor_i;
-	float accel_noise = LC_KF.accel_noise_PSD * tor_i;
-	float accel_bias = LC_KF.accel_bias_PSD * tor_i;
-	float gyro_bias = LC_KF.gyro_bias_PSD * tor_i;
+	float gyro_noise = LC_KF.gyro_noise_PSD * tor_c;
+	float accel_noise = LC_KF.accel_noise_PSD * tor_c;
+	float accel_bias = LC_KF.accel_bias_PSD * tor_c;
+	float gyro_bias = LC_KF.gyro_bias_PSD * tor_c;
 	for (int i = 0; i < 3; i++) {
 		Q[i * 15 + i] = gyro_noise;          // attitude (gyro noise)
 		Q[(3 + i) * 15 + 3 + i] = accel_noise;   // velocity (accel noise)
-		Q[(6 + i) * 15 + 6 + i] = 1.0e-4f * tor_i; // position (keeps P_pos alive)
+		Q[(6 + i) * 15 + 6 + i] = 1.0e-4f * tor_c; // position (keeps P_pos alive)
 		Q[(9 + i) * 15 + 9 + i] = accel_bias;    // accel bias
 		Q[(12 + i) * 15 + 12 + i] = gyro_bias;   // gyro bias
 	}
@@ -864,7 +918,8 @@ void predict(float imu[6], float tor_i) {
 	memcpy(x.P_matrix, matP.pData, 225 * sizeof(float));
 	symmetrize_P();
 
-	update_output();
+	cov_n = 0; cov_tor = 0.0f; cov_have_L = 0;
+	for (int i = 0; i < 3; i++) cov_fsum[i] = 0.0f;
 }
 
 static int rejectCount = 0;
@@ -914,6 +969,8 @@ static void reject_watchdog(const double GNSS_r_eb_e[3],
 
 void update(double lat_rad, double lon_rad, double h_m, float vn, float ve,
 		float vd, int velocityValid, float hdop) {
+	// Bring P up to the current time before using it
+	flush_cov();
 	// Convert GNSS NED (lat,lon,h,vn,ve,vd) to ECEF internally
 	double GNSS_r_eb_e[3];
 	float GNSS_v_eb_e[3];

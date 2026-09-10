@@ -1,0 +1,5 @@
+../Core/Src/Logging.c:27:24:ringUsed	1
+../Core/Src/Logging.c:32:24:ringFree	1
+../Core/Src/Logging.c:39:12:cdcTxBusy	2
+../Core/Src/Logging.c:50:5:cdcPush	7
+../Core/Src/Logging.c:79:6:cdcPump	7

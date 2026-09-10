@@ -1,4 +1,6 @@
+"./Core/Src/ECL.o"
 "./Core/Src/EKF.o"
+"./Core/Src/Logging.o"
 "./Core/Src/MPU9250.o"
 "./Core/Src/NMEA.o"
 "./Core/Src/UARTRingBuffer.o"

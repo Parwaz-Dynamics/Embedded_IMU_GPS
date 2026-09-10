@@ -17,7 +17,8 @@
 ../Core/Src/EKF.c:425:13:symmetrize_P	4
 ../Core/Src/EKF.c:438:13:update_output	1
 ../Core/Src/EKF.c:515:5:format_filter_output	7
-../Core/Src/EKF.c:565:6:init_EKF	1
-../Core/Src/EKF.c:607:6:predict	25
-../Core/Src/EKF.c:878:13:reject_watchdog	11
-../Core/Src/EKF.c:915:6:update	57
+../Core/Src/EKF.c:584:6:init_EKF	2
+../Core/Src/EKF.c:631:6:predict	10
+../Core/Src/EKF.c:788:13:flush_cov	21
+../Core/Src/EKF.c:933:13:reject_watchdog	11
+../Core/Src/EKF.c:970:6:update	57

@@ -17,7 +17,8 @@
 ../Core/Src/EKF.c:425:13:symmetrize_P	24	static
 ../Core/Src/EKF.c:438:13:update_output	128	static
 ../Core/Src/EKF.c:515:5:format_filter_output	240	static
-../Core/Src/EKF.c:565:6:init_EKF	208	static
-../Core/Src/EKF.c:607:6:predict	3992	static
-../Core/Src/EKF.c:878:13:reject_watchdog	40	static
-../Core/Src/EKF.c:915:6:update	8408	static
+../Core/Src/EKF.c:584:6:init_EKF	208	static
+../Core/Src/EKF.c:631:6:predict	992	static
+../Core/Src/EKF.c:788:13:flush_cov	3112	static
+../Core/Src/EKF.c:933:13:reject_watchdog	40	static
+../Core/Src/EKF.c:970:6:update	8408	static
